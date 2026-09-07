@@ -44,6 +44,23 @@ SHEETS_CONFIG = {
         "total_bruto", "total_limitado",
         "updated_at",
     ],
+    "barema_extensao_docente": [
+        "id", "consulta_id", "code", "nome",
+        "titulacao_bruto", "titulacao_limitado",
+        "atuacao_bruto", "atuacao_limitado",
+        "producao_bruto", "producao_limitado",
+        "formacao_bruto", "formacao_limitado",
+        "total_bruto", "total_limitado",
+        "updated_at",
+    ],
+    "barema_extensao_discente": [
+        "id", "consulta_id", "code", "nome",
+        "atuacao_bruto", "atuacao_limitado",
+        "producao_bruto", "producao_limitado",
+        "eventos_bruto", "eventos_limitado",
+        "total_bruto", "total_limitado",
+        "updated_at",
+    ],
     "consultas": [
         "id", "url_informada", "url_consultada", "code",
         "success", "message", "created_at", "tipo",
@@ -188,9 +205,18 @@ def sync_table(table_name, rows):
     )
 
 
-def sync_all(barema_rows, barema_aeri_rows, consultas_rows, editais_rows):
+def sync_all(
+    barema_rows,
+    barema_aeri_rows,
+    barema_extensao_docente_rows,
+    barema_extensao_discente_rows,
+    consultas_rows,
+    editais_rows,
+):
     """Sincroniza todas as abas de uma vez."""
     sync_table("barema", barema_rows)
     sync_table("barema_aeri", barema_aeri_rows)
+    sync_table("barema_extensao_docente", barema_extensao_docente_rows)
+    sync_table("barema_extensao_discente", barema_extensao_discente_rows)
     sync_table("consultas", consultas_rows)
     sync_table("editais", editais_rows)

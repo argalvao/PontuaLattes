@@ -14,28 +14,62 @@ const statTotal = document.getElementById('stat-total');
 const token = localStorage.getItem('auth_token');
 
 let lastResultado = null;
-let editaisCarregados = { ic: {}, aeri: {} };
+let editaisCarregados = { ic: {}, aeri: {}, extensao: {} };
+
+const NOMES_EDITAL = { ic: 'IC', aeri: 'AERI', extensao: 'PIBEX' };
+
+// Edital escolhido no formulário: 'ic' | 'aeri' | 'extensao'.
+function getEditalSelecionado() {
+	return document.querySelector('input[name="edital"]:checked')?.value || 'ic';
+}
+
+// Perfil do PIBEX: 'docente' | 'discente'.
+function getPerfilExtensao() {
+	return document.querySelector('input[name="perfil-extensao"]:checked')?.value || 'docente';
+}
+
+// Tipo enviado à API: 'ic' | 'aeri' | 'extensao_docente' | 'extensao_discente'.
+function getTipoConsulta() {
+	const edital = getEditalSelecionado();
+	return edital === 'extensao' ? `extensao_${getPerfilExtensao()}` : edital;
+}
+
+// Apenas o barema de IC considera os últimos 5 anos; AERI e PIBEX usam o currículo completo.
+function tipoUsaUltimosCincoAnos(tipo) {
+	return tipo === 'ic';
+}
+
+function atualizarSubEscolhaExtensao() {
+	const bloco = document.getElementById('extensao-perfil');
+	if (bloco) {
+		bloco.hidden = getEditalSelecionado() !== 'extensao';
+	}
+}
 
 async function inicializarEditais() {
 	try {
 		const response = await fetch('/api/editais');
 		const dados = await response.json();
 		if (dados.success) {
-			editaisCarregados = { ic: dados.ic || {}, aeri: dados.aeri || {} };
+			editaisCarregados = {
+				ic: dados.ic || {},
+				aeri: dados.aeri || {},
+				extensao: dados.extensao || {},
+			};
 		}
 	} catch (_) {}
 	atualizarLinkEdital();
 }
 
 function atualizarLinkEdital() {
-	const edital = document.querySelector('input[name="edital"]:checked')?.value || 'ic';
+	const edital = getEditalSelecionado();
 	const info = editaisCarregados[edital] || {};
 	const link = document.getElementById('edital-link');
 	if (!link) return;
 	if (info.url) {
 		const ano = info.ano ? ` UEFS ${info.ano}` : '';
 		link.href = info.url;
-		link.textContent = `Ver edital ${edital.toUpperCase()}${ano}`;
+		link.textContent = `Ver edital ${NOMES_EDITAL[edital] || edital.toUpperCase()}${ano}`;
 		link.style.display = '';
 	} else {
 		link.style.display = 'none';
@@ -44,6 +78,7 @@ function atualizarLinkEdital() {
 
 document.addEventListener('DOMContentLoaded', () => {
 	inicializarEditais();
+	atualizarSubEscolhaExtensao();
 });
 
 function setStatus(type, message) {
@@ -52,6 +87,11 @@ function setStatus(type, message) {
 }
 
 function resetResults() {
+	estadoBaremaEditavel = null;
+	sugestoesPdf = null;
+	mostrarPainelPdf(false);
+	setPdfStatus('', '');
+	renderAvisosPdf([]);
 	resultsSection.classList.remove('visible');
 	summaryList.innerHTML = '';
 	publicationList.innerHTML = '';
@@ -106,8 +146,7 @@ function renderExternalLink(url) {
 	return `<a class="soft-link" href="${safeUrl}" target="_blank" rel="noopener noreferrer">Link</a>`;
 }
 
-function getFilteredPublicationSeries(publicacoes) {
-	const anoMinimo = getMinimumBaremaYear();
+function getFilteredPublicationSeries(publicacoes, anoMinimo = getMinimumBaremaYear()) {
 	const series = publicacoes?.series || [];
 
 	return series
@@ -128,25 +167,24 @@ function getFilteredPublicationSeries(publicacoes) {
 		.filter((item) => item.total > 0);
 }
 
-function renderSummary(resultado, previewHtml) {
+function renderSummary(resultado, previewHtml, anoMinimo = getMinimumBaremaYear()) {
 	const publicacoes = resultado.publicacoes || {};
 	const pesquisador = extractResearcherName(resultado, previewHtml);
-	const anoMinimo = getMinimumBaremaYear();
 	const anoAtual = getCurrentBaremaYear();
 
 	const anosLimpos = (publicacoes.anos || [])
 		.map(a => String(a).trim())
 		.filter(a => a !== '' && !isNaN(Number(a)));
 
+	const anosConsiderados = anosLimpos.filter(ano => Number(ano) >= anoMinimo);
+	const rotuloPeriodo = anoMinimo > 0
+		? `Período considerado (${anoMinimo} a ${anoAtual})`
+		: 'Período considerado (currículo completo)';
+
 	const itens = [
 		['Nome', escapeHtml(pesquisador)],
 		['Indicadores de publicação', renderExternalLink(getIndicadoresPublicacaoUrl(resultado.code))],
-		[
-			`Período considerado (${anoMinimo} a ${anoAtual})`,
-			escapeHtml(anosLimpos
-				.filter(ano => Number(ano) >= anoMinimo)
-				.join(', ') || 'Nenhum'),
-		],
+		[rotuloPeriodo, escapeHtml(anosConsiderados.join(', ') || 'Nenhum')],
 	];
 
 	summaryList.innerHTML = itens
@@ -154,13 +192,16 @@ function renderSummary(resultado, previewHtml) {
 		.join('');
 }
 
-function renderPublications(series) {
-	const anoMinimo = getMinimumBaremaYear();
+function renderPublications(series, anoMinimo = getMinimumBaremaYear()) {
 	const anoAtual = getCurrentBaremaYear();
-	publicationsTitle.textContent = `Publicações de ${anoMinimo} a ${anoAtual}`;
+	publicationsTitle.textContent = anoMinimo > 0
+		? `Publicações de ${anoMinimo} a ${anoAtual}`
+		: 'Publicações do currículo completo';
 
 	if (!series.length) {
-		publicationList.innerHTML = `<div class="publication-item">Nenhuma publicação encontrada entre ${anoMinimo} e ${anoAtual}.</div>`;
+		publicationList.innerHTML = anoMinimo > 0
+			? `<div class="publication-item">Nenhuma publicação encontrada entre ${anoMinimo} e ${anoAtual}.</div>`
+			: '<div class="publication-item">Nenhuma publicação encontrada no currículo.</div>';
 		return;
 	}
 
@@ -188,16 +229,37 @@ function formatNumber(value) {
 	});
 }
 
-function renderBaremaSection(title, section, maximumAllowedLabel) {
+function renderBaremaSection(title, section, maximumAllowedLabel, chaveSecao) {
 	const itens = Object.entries(section.itens || {});
+	const editavel = Boolean(section.editavel);
+
+	const celulaQuantidade = (label, item) => editavel
+		? `<input
+				type="number"
+				class="qtd-editavel"
+				min="0"
+				step="1"
+				value="${Number(item.quantidade) || 0}"
+				data-secao="${escapeHtml(chaveSecao)}"
+				data-rotulo="${escapeHtml(label)}"
+				data-peso="${Number(item.peso) || 0}"
+				data-teto="${item.teto_pontos ?? ''}"
+				aria-label="Quantidade de ${escapeHtml(label)}"
+			>`
+		: formatNumber(item.quantidade);
+
+	const cabecalhoTotal = editavel
+		? `<span>Informe as quantidades abaixo</span>
+			<span>Subtotal: <strong class="subtotal-secao" data-secao="${escapeHtml(chaveSecao)}">${formatNumber(section.subtotal_limitado)}</strong> / máximo ${maximumAllowedLabel}</span>`
+		: `<span>Pontuação encontrada: ${formatNumber(section.subtotal_bruto)}</span>
+			<span>Máximo permitido: ${maximumAllowedLabel}</span>`;
 
 	return `
-		<div class="barema-card">
+		<div class="barema-card${editavel ? ' barema-card-editavel' : ''}">
 			<div class="barema-card-header">
-				<h3>${title}</h3>
+				<h3>${title}${editavel ? ' <span class="barema-tag-manual">preenchimento manual</span>' : ''}</h3>
 				<div class="barema-card-total">
-					<span>Pontuação encontrada: ${formatNumber(section.subtotal_bruto)}</span>
-					<span>Máximo permitido: ${maximumAllowedLabel}</span>
+					${cabecalhoTotal}
 				</div>
 			</div>
 			${itens.length ? `
@@ -214,10 +276,10 @@ function renderBaremaSection(title, section, maximumAllowedLabel) {
 						<tbody>
 							${itens.map(([label, item]) => `
 								<tr>
-									<td>${label}</td>
-									<td>${formatNumber(item.quantidade)}</td>
+									<td>${label}${item.teto_pontos != null ? ` <span class="barema-teto-item">máx ${formatNumber(item.teto_pontos)} pts</span>` : ''}</td>
+									<td>${celulaQuantidade(label, item)}</td>
 									<td>${formatNumber(item.peso)}</td>
-									<td>${formatNumber(item.pontos)}</td>
+									<td class="pontos-celula">${formatNumber(item.pontos)}</td>
 								</tr>
 							`).join('')}
 						</tbody>
@@ -408,17 +470,305 @@ function renderBaremaAERI(barema) {
 		: '';
 }
 
+const pdfPanel = document.getElementById('pdf-panel');
+const pdfInput = document.getElementById('pdf-input');
+const pdfStatus = document.getElementById('pdf-status');
+
+// Guarda as sugestões vindas do PDF para reaplicar ao trocar docente/discente.
+let sugestoesPdf = null;
+
+function setPdfStatus(tipo, mensagem) {
+	if (!pdfStatus) return;
+	pdfStatus.className = `pdf-status ${tipo}`;
+	pdfStatus.textContent = mensagem;
+}
+
+function mostrarPainelPdf(visivel) {
+	if (pdfPanel) pdfPanel.hidden = !visivel;
+}
+
+function lerArquivoComoBase64(arquivo) {
+	return new Promise((resolve, reject) => {
+		const leitor = new FileReader();
+		leitor.onerror = () => reject(new Error('Não foi possível ler o arquivo.'));
+		leitor.onload = () => {
+			const resultado = String(leitor.result || '');
+			resolve(resultado.slice(resultado.indexOf(',') + 1));
+		};
+		leitor.readAsDataURL(arquivo);
+	});
+}
+
+// Escreve as quantidades sugeridas nos campos editáveis do barema em exibição.
+function aplicarSugestoesPdf() {
+	if (!sugestoesPdf) return 0;
+
+	const tipo = getTipoConsulta();
+	const porSecao = sugestoesPdf[tipo];
+	if (!porSecao) return 0;
+
+	let preenchidos = 0;
+	Object.entries(porSecao).forEach(([chaveSecao, itens]) => {
+		Object.entries(itens).forEach(([rotulo, quantidade]) => {
+			const campo = baremaSections.querySelector(
+				`.qtd-editavel[data-secao="${chaveSecao}"][data-rotulo="${CSS.escape(rotulo)}"]`,
+			);
+			if (campo) {
+				campo.value = String(Math.max(0, Number(quantidade) || 0));
+				preenchidos += 1;
+			}
+		});
+	});
+
+	if (preenchidos) recalcularBaremaEditavel();
+	return preenchidos;
+}
+
+function renderAvisosPdf(avisos) {
+	const anterior = pdfPanel?.querySelector('.pdf-avisos');
+	if (anterior) anterior.remove();
+	if (!pdfPanel || !avisos || !avisos.length) return;
+
+	const lista = document.createElement('ul');
+	lista.className = 'pdf-avisos';
+	lista.innerHTML = avisos.map((aviso) => `<li>${escapeHtml(aviso)}</li>`).join('');
+	pdfPanel.appendChild(lista);
+}
+
+async function enviarPdf(arquivo) {
+	if (!arquivo) return;
+
+	if (arquivo.type && arquivo.type !== 'application/pdf' && !/\.pdf$/i.test(arquivo.name)) {
+		setPdfStatus('erro', 'Selecione um arquivo PDF.');
+		return;
+	}
+
+	setPdfStatus('', `Lendo ${arquivo.name}...`);
+
+	try {
+		const pdfBase64 = await lerArquivoComoBase64(arquivo);
+		const resposta = await fetch('/api/lattes-pdf', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ pdf_base64: pdfBase64 }),
+		});
+
+		const dados = await resposta.json();
+		if (!resposta.ok || !dados.success) {
+			throw new Error(dados.message || 'Não foi possível ler o PDF.');
+		}
+
+		sugestoesPdf = dados.sugestoes || null;
+		renderAvisosPdf(dados.sugestoes?.avisos);
+
+		const preenchidos = aplicarSugestoesPdf();
+		const titular = dados.nome ? ` (${dados.nome})` : '';
+		setPdfStatus(
+			'sucesso',
+			preenchidos
+				? `PDF lido${titular}: ${preenchidos} campo(s) preenchido(s). Confira e ajuste se precisar.`
+				: `PDF lido${titular}, mas não havia dados para as seções deste perfil.`,
+		);
+	} catch (erro) {
+		setPdfStatus('erro', erro.message || 'Falha ao enviar o PDF.');
+	}
+}
+
+if (pdfInput) {
+	pdfInput.addEventListener('change', () => {
+		enviarPdf(pdfInput.files && pdfInput.files[0]);
+		pdfInput.value = '';
+	});
+}
+
+// Estado do barema exibido, para recalcular quando o avaliador digita
+// as quantidades das seções que o Lattes não expõe.
+let estadoBaremaEditavel = null;
+
+function ligarCamposEditaveis() {
+	const campos = baremaSections.querySelectorAll('.qtd-editavel');
+	campos.forEach((campo) => {
+		campo.addEventListener('input', recalcularBaremaEditavel);
+		// Ao sair do campo, normaliza o que foi digitado (negativo, decimal,
+		// texto colado) para o inteiro que realmente entrou na conta.
+		campo.addEventListener('change', () => {
+			const valor = Math.max(0, Math.floor(Number(campo.value) || 0));
+			if (String(valor) !== campo.value) {
+				campo.value = String(valor);
+			}
+			recalcularBaremaEditavel();
+		});
+	});
+	if (campos.length) {
+		recalcularBaremaEditavel();
+	}
+}
+
+// Recalcula pontos por item (respeitando o teto de cada linha), subtotal de
+// cada seção (respeitando o teto da seção) e o total final.
+function recalcularBaremaEditavel() {
+	if (!estadoBaremaEditavel) return;
+
+	const { barema, secoes } = estadoBaremaEditavel;
+	let total = 0;
+
+	secoes.forEach(([, chave, maximo]) => {
+		const secao = barema[chave] || {};
+		const teto = Number(secao.teto ?? maximo) || 0;
+		let subtotal;
+
+		if (secao.editavel) {
+			subtotal = 0;
+			baremaSections
+				.querySelectorAll(`.qtd-editavel[data-secao="${chave}"]`)
+				.forEach((campo) => {
+					const quantidade = Math.max(0, Math.floor(Number(campo.value) || 0));
+					const peso = Number(campo.dataset.peso) || 0;
+					const tetoItem = campo.dataset.teto === '' ? null : Number(campo.dataset.teto);
+
+					let pontos = quantidade * peso;
+					if (tetoItem !== null && Number.isFinite(tetoItem)) {
+						pontos = Math.min(pontos, tetoItem);
+					}
+					subtotal += pontos;
+
+					const celula = campo.closest('tr')?.querySelector('.pontos-celula');
+					if (celula) celula.textContent = formatNumber(pontos);
+				});
+
+			subtotal = Math.min(subtotal, teto);
+			const rodape = baremaSections.querySelector(`.subtotal-secao[data-secao="${chave}"]`);
+			if (rodape) rodape.textContent = formatNumber(subtotal);
+		} else {
+			subtotal = Number(secao.subtotal_limitado) || 0;
+		}
+
+		total += subtotal;
+
+		const destaque = baremaSummary.querySelector(`.barema-highlight-item[data-secao="${chave}"] strong`);
+		if (destaque) destaque.textContent = formatNumber(subtotal);
+	});
+
+	total = Math.round(total * 100) / 100;
+	statBaremaTotal.textContent = formatNumber(total);
+	const totalFinal = baremaSummary.querySelector('.barema-highlight-total strong');
+	if (totalFinal) totalFinal.textContent = formatNumber(total);
+}
+
+// Renderiza um barema qualquer a partir da lista de destaques e de seções.
+// destaques: [rótulo, chave]  ·  secoes: [título, chave, máximo permitido]
+function renderBaremaComSecoes(barema, destaques, secoes, mensagemIndisponivel) {
+	if (!barema || !barema.success) {
+		baremaSummary.innerHTML = `<div class="publication-item">${mensagemIndisponivel}</div>`;
+		baremaSections.innerHTML = '';
+		baremaObservations.innerHTML = '';
+		statBaremaTotal.textContent = '0';
+		return;
+	}
+
+	statBaremaTotal.textContent = formatNumber(barema.total_limitado);
+
+	baremaSummary.innerHTML = `
+		<div class="barema-highlight-grid">
+			${destaques.map(([rotulo, chave]) => `
+				<div class="barema-highlight-item" data-secao="${escapeHtml(chave)}">
+					<span class="barema-highlight-label">${rotulo}</span>
+					<strong>${formatNumber(barema[chave]?.subtotal_limitado)}</strong>
+				</div>
+			`).join('')}
+			<div class="barema-highlight-item barema-highlight-total">
+				<span class="barema-highlight-label">Total final</span>
+				<strong>${formatNumber(barema.total_limitado)}</strong>
+			</div>
+		</div>
+	`;
+
+	baremaSections.innerHTML = secoes
+		.map(([titulo, chave, maximo]) => renderBaremaSection(titulo, barema[chave] || {}, maximo, chave))
+		.join('');
+
+	estadoBaremaEditavel = { barema, secoes };
+	ligarCamposEditaveis();
+	aplicarSugestoesPdf();
+
+	const observacoes = barema.observacoes || [];
+	baremaObservations.innerHTML = observacoes.length
+		? `
+			<h3>Observações</h3>
+			<ul class="details-list">
+				${observacoes.map((item) => `<li>${item}</li>`).join('')}
+			</ul>
+		`
+		: '';
+}
+
+// Barema A do Anexo II do Edital PIBEX — docente/orientador (máximo 40 pontos).
+function renderBaremaExtensaoDocente(barema) {
+	renderBaremaComSecoes(
+		barema,
+		[
+			['Titulação', 'titulacao'],
+			['Atuação na extensão', 'atuacao_extensao'],
+			['Produção', 'producao'],
+			['Formação RH', 'formacao_recursos_humanos'],
+		],
+		[
+			['I - Titulação', 'titulacao', '4'],
+			['II - Atuação na extensão', 'atuacao_extensao', '8'],
+			['III - Indicadores de produção científica, tecnológica e artística', 'producao', '18'],
+			['IV - Formação de recursos humanos', 'formacao_recursos_humanos', '10'],
+		],
+		'Barema PIBEX docente não disponível.',
+	);
+}
+
+// Barema B do Anexo II do Edital PIBEX — discente/candidato (máximo 20 pontos).
+function renderBaremaExtensaoDiscente(barema) {
+	renderBaremaComSecoes(
+		barema,
+		[
+			['Atuação na extensão', 'atuacao_extensao'],
+			['Produção', 'producao'],
+			['Eventos acadêmicos', 'participacao_eventos'],
+		],
+		[
+			['I - Atuação na extensão', 'atuacao_extensao', '6'],
+			['II - Indicadores de produção científica, tecnológica e artística', 'producao', '5'],
+			['III - Participação/organização de eventos acadêmicos', 'participacao_eventos', '9'],
+		],
+		'Barema PIBEX discente não disponível.',
+	);
+}
+
 function renderFromResultado(resultado) {
 	if (!resultado) return;
 
-	const edital = document.querySelector('input[name="edital"]:checked')?.value || 'ic';
+	const tipo = getTipoConsulta();
+	const anoMinimo = tipoUsaUltimosCincoAnos(tipo) ? getMinimumBaremaYear() : 0;
 	const baremaCardTitle = document.getElementById('barema-card-title');
 	const statLabel = document.getElementById('stat-barema-label');
 
-	if (edital === 'aeri') {
+	renderSummary(resultado, resultado.preview_html || '', anoMinimo);
+	renderPublications(
+		getFilteredPublicationSeries(resultado.publicacoes || {}, anoMinimo),
+		anoMinimo,
+	);
+
+	// O envio do PDF só faz sentido no PIBEX, que é onde há seções manuais.
+	mostrarPainelPdf(tipo.startsWith('extensao_'));
+
+	if (tipo === 'aeri') {
 		if (baremaCardTitle) baremaCardTitle.textContent = 'Barema discente (Edital AERI)';
 		if (statLabel) statLabel.textContent = 'Pontuação máxima: 40 pontos';
 		renderBaremaAERI(resultado.barema_aeri || null);
+	} else if (tipo === 'extensao_docente') {
+		if (baremaCardTitle) baremaCardTitle.textContent = 'Barema docente/orientador (Edital PIBEX)';
+		if (statLabel) statLabel.textContent = 'Pontuação máxima: 40 pontos';
+		renderBaremaExtensaoDocente(resultado.barema_extensao_docente || null);
+	} else if (tipo === 'extensao_discente') {
+		if (baremaCardTitle) baremaCardTitle.textContent = 'Barema discente/candidato (Edital PIBEX)';
+		if (statLabel) statLabel.textContent = 'Pontuação máxima: 20 pontos';
+		renderBaremaExtensaoDiscente(resultado.barema_extensao_discente || null);
 	} else {
 		if (baremaCardTitle) baremaCardTitle.textContent = 'Barema docente (Edital IC)';
 		if (statLabel) statLabel.textContent = 'Pontuação máxima: 60 pontos';
@@ -426,8 +776,9 @@ function renderFromResultado(resultado) {
 	}
 }
 
-document.querySelectorAll('input[name="edital"]').forEach((radio) => {
+document.querySelectorAll('input[name="edital"], input[name="perfil-extensao"]').forEach((radio) => {
 	radio.addEventListener('change', () => {
+		atualizarSubEscolhaExtensao();
 		atualizarLinkEdital();
 		if (lastResultado) renderFromResultado(lastResultado);
 	});
@@ -443,7 +794,7 @@ form.addEventListener('submit', async (event) => {
 		return;
 	}
 
-	const edital = document.querySelector('input[name="edital"]:checked')?.value || 'ic';
+	const tipo = getTipoConsulta();
 
 	submitButton.disabled = true;
 	submitButton.textContent = 'Consultando...';
@@ -455,7 +806,7 @@ form.addEventListener('submit', async (event) => {
 			headers: {
 				'Content-Type': 'application/json',
 			},
-			body: JSON.stringify({ url, tipo: edital }),
+			body: JSON.stringify({ url, tipo }),
 		});
 
 		const responseText = await response.text();
@@ -475,14 +826,10 @@ form.addEventListener('submit', async (event) => {
 			throw new Error(resultado.message || 'Não foi possível concluir a coleta.');
 		}
 
-		const previewHtml = resultado.preview_html || '';
 		const publicacoes = resultado.publicacoes || {};
-		const seriesPeriodo = getFilteredPublicationSeries(publicacoes);
 
 		statTotal.textContent = String(publicacoes.total_geral || 0);
 
-		renderSummary(resultado, previewHtml);
-		renderPublications(seriesPeriodo);
 		lastResultado = resultado;
 		renderFromResultado(resultado);
 		resultsSection.classList.add('visible');

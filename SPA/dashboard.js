@@ -9,8 +9,18 @@ if (!token) {
 let paginaAtual = 1;
 const itensPorPagina = 10;
 
-// Aba ativa (ic | aeri)
+// Aba ativa: ic | aeri | extensao_docente | extensao_discente
 let tabAtiva = "ic";
+
+// Tipos de edital que possuem link configurável na página inicial.
+const TIPOS_EDITAL = ["ic", "aeri", "extensao"];
+
+const ROTULOS_ABA = {
+    ic: "Edital IC",
+    aeri: "Edital AERI",
+    extensao_docente: "Edital PIBEX — Docente",
+    extensao_discente: "Edital PIBEX — Discente",
+};
 
 // Inicializa dashboard
 document.addEventListener("DOMContentLoaded", () => {
@@ -29,7 +39,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             const titulo = document.getElementById("historico-title");
             if (titulo) {
-                titulo.textContent = `Histórico de Consultas — Edital ${tabAtiva.toUpperCase()}`;
+                titulo.textContent = `Histórico de Consultas — ${ROTULOS_ABA[tabAtiva] || tabAtiva}`;
             }
 
             paginaAtual = 1;
@@ -250,7 +260,7 @@ async function carregarEditais() {
         const dados = await response.json();
         if (!dados.success) return;
 
-        ["ic", "aeri"].forEach((tipo) => {
+        TIPOS_EDITAL.forEach((tipo) => {
             const edital = dados[tipo] || {};
             const anoEl = document.getElementById(`edital-${tipo}-ano`);
             const urlEl = document.getElementById(`edital-${tipo}-url`);

@@ -3,7 +3,7 @@
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>PontuaLattes — Barema Automático IC e AERI · UEFS</title>
+	<title>PontuaLattes — Barema Automático IC, AERI e PIBEX · UEFS</title>
 	<link rel="stylesheet" href="./styles.css">
 </head>
 <body>
@@ -12,7 +12,7 @@
 			<span class="hero-badge">Projeto de extensão • EXA618 • UEFS</span>
 			<h1>PontuaLattes</h1>
 			<p class="hero-lead" style="text-align: justify;">
-				Consulte o currículo Lattes de um candidato e obtenha instantaneamente a pontuação calculada conforme o barema dos editais de <strong>Iniciação Científica (IC)</strong> e <strong>Assessoria Especial de Relações Institucionais (AERI)</strong> da UEFS.
+				Consulte o currículo Lattes de um candidato e obtenha instantaneamente a pontuação calculada conforme o barema dos editais de <strong>Iniciação Científica (IC)</strong>, <strong>Assessoria Especial de Relações Institucionais (AERI)</strong> e <strong>Extensão (PIBEX)</strong> da UEFS.
 			</p>
 			<div class="hero-meta">
 				<a id="edital-link" class="hero-link" href="#" target="_blank" rel="noopener noreferrer" style="display:none">
@@ -43,6 +43,18 @@
 					<label class="radio-label">
 						<input type="radio" name="edital" value="aeri"> Edital AERI
 					</label>
+					<label class="radio-label">
+						<input type="radio" name="edital" value="extensao"> Edital PIBEX (Extensão)
+					</label>
+				</div>
+				<div class="edital-subchoice" id="extensao-perfil" hidden>
+					<span class="subchoice-label">Perfil avaliado no PIBEX:</span>
+					<label class="radio-label">
+						<input type="radio" name="perfil-extensao" value="docente" checked> Docente/Orientador (até 40 pontos)
+					</label>
+					<label class="radio-label">
+						<input type="radio" name="perfil-extensao" value="discente"> Discente/Candidato (até 20 pontos)
+					</label>
 				</div>
 				<p class="helper-text">
 					Informe a URL completa ou o código público do currículo Lattes.
@@ -60,9 +72,9 @@
 					</p>
 				</article>
 				<article class="info-card">
-					<h2>IC e AERI</h2>
+					<h2>IC, AERI e PIBEX</h2>
 					<p>
-						Selecione o edital desejado antes de consultar. Cada edital possui critérios e pesos distintos aplicados no cálculo do barema.
+						Selecione o edital desejado antes de consultar. Cada edital possui critérios e pesos distintos aplicados no cálculo do barema. No PIBEX, escolha também se o currículo avaliado é do docente/orientador ou do discente/candidato.
 					</p>
 				</article>
 				<article class="info-card">
@@ -102,6 +114,22 @@
 			<article class="panel details-card" id="barema-card">
 				<h2 id="barema-card-title">Barema docente (Edital IC)</h2>
 				<div id="barema-summary" class="barema-summary"></div>
+
+				<div id="pdf-panel" class="pdf-panel" hidden>
+					<div class="pdf-panel-texto">
+						<strong>Preencher as seções manuais automaticamente</strong>
+						<p>
+							Participação em eventos e projetos de extensão não aparecem nos indicadores
+							públicos do CNPq. Envie o PDF do currículo (no Lattes: <em>Imprimir currículo</em>)
+							e o sistema preenche os campos abaixo, que continuam editáveis.
+						</p>
+					</div>
+					<div class="pdf-panel-acao">
+						<label class="pdf-botao" for="pdf-input">Escolher PDF</label>
+						<input id="pdf-input" type="file" accept="application/pdf,.pdf" hidden>
+						<span id="pdf-status" class="pdf-status" aria-live="polite"></span>
+					</div>
+				</div>
 				<div id="barema-sections" class="barema-sections"></div>
 				<div id="barema-observations" class="barema-observations"></div>
 			</article>

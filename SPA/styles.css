@@ -101,9 +101,154 @@ body {
     margin: 12px 0 4px;
 }
 
+/* Painel de envio do PDF do currículo */
+.pdf-panel {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin: 18px 0 4px;
+    padding: 16px 18px;
+    border: 1px dashed var(--accent);
+    border-radius: 10px;
+    background: var(--accent-soft);
+}
+
+.pdf-panel[hidden] { display: none; }
+
+.pdf-panel-texto { flex: 1 1 320px; }
+
+.pdf-panel-texto strong {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 0.95rem;
+}
+
+.pdf-panel-texto p {
+    margin: 0;
+    font-size: 0.86rem;
+    color: var(--muted);
+    line-height: 1.5;
+}
+
+.pdf-panel-acao {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+}
+
+.pdf-botao {
+    display: inline-block;
+    padding: 9px 18px;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #06202e;
+    font-size: 0.88rem;
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: filter 0.15s;
+}
+
+.pdf-botao:hover { filter: brightness(1.08); }
+
+.pdf-status {
+    font-size: 0.82rem;
+    color: var(--muted);
+    max-width: 320px;
+}
+
+.pdf-status.erro { color: #fca5a5; }
+.pdf-status.sucesso { color: #86efac; }
+
+.pdf-avisos {
+    flex: 1 1 100%;
+    margin: 4px 0 0;
+    padding-left: 18px;
+    font-size: 0.82rem;
+    color: var(--muted);
+    line-height: 1.5;
+}
+
+/* Seções de preenchimento manual do PIBEX */
+.barema-card-editavel {
+    border-color: var(--accent);
+    background: linear-gradient(0deg, var(--accent-soft), var(--accent-soft));
+}
+
+.barema-tag-manual {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 2px 9px;
+    border-radius: 99px;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    vertical-align: middle;
+}
+
+.barema-teto-item {
+    display: inline-block;
+    margin-left: 6px;
+    font-size: 0.74rem;
+    color: var(--muted);
+    white-space: nowrap;
+}
+
+input.qtd-editavel {
+    width: 74px;
+    padding: 5px 8px;
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    background: var(--card);
+    color: var(--text);
+    font-size: 0.9rem;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+
+input.qtd-editavel:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+.subtotal-secao {
+    font-variant-numeric: tabular-nums;
+}
+
+/* Sub-escolha do perfil no edital PIBEX (docente/discente) */
+.edital-subchoice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 20px;
+    margin: 4px 0 8px;
+    padding: 10px 14px;
+    border: 1px dashed var(--card-border);
+    border-radius: 8px;
+    background: var(--accent-soft);
+}
+
+.edital-subchoice[hidden] {
+    display: none;
+}
+
+.subchoice-label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: 0.01em;
+}
+
 .editais-config {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
     gap: 20px;
     margin-top: 16px;
 }

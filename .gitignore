@@ -1,0 +1,24 @@
+# Ambiente
+.env
+.venv/
+venv/
+
+# Banco local (modo sem Turso)
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Amostras de currículos coletadas para conferência (dados de terceiros)
+_amostras/
+_conferencia.html
+_cv_completo_*.html
+_diagnostico_lattes.txt
+_to_delete/

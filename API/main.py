@@ -1,3 +1,4 @@
+import base64
 import json
 import mimetypes
 import os
@@ -7,14 +8,20 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 
-from controller import buscaLattes
+from controller import buscaLattes, sugerir_preenchimento_extensao
 from database import (
     init_database, get_consultas, count_consultas, get_top5_consultas,
     verify_login, get_user_id_by_token, delete_session, get_consultas_por_dia,
-    get_editais, salvar_edital,
+    get_editais, salvar_edital, normalizar_tipo, normalizar_tipo_edital,
+    usando_banco_local, CAMINHO_BANCO_LOCAL,
     dump_barema, dump_barema_aeri, dump_consultas, dump_editais,
+    dump_barema_extensao_docente, dump_barema_extensao_discente,
 )
 
+
+# Limite do PDF enviado pelo avaliador (o currículo Lattes completo costuma
+# ter menos de 2 MB, mesmo com 90 páginas).
+MAX_PDF_BYTES = 12 * 1024 * 1024
 
 BASE_DIR = Path(__file__).resolve().parent
 SPA_DIR = BASE_DIR.parent / "SPA"
@@ -40,6 +47,8 @@ def _try_sync_sheets():
         sync_all(
             dump_barema(),
             dump_barema_aeri(),
+            dump_barema_extensao_docente(),
+            dump_barema_extensao_discente(),
             dump_consultas(),
             dump_editais(),
         )
@@ -117,7 +126,9 @@ class ICCollectHandler(BaseHTTPRequestHandler):
     
         if path == "/api/editais":
             editais = get_editais()
-            self._send_json({"success": True, "ic": editais["ic"], "aeri": editais["aeri"]})
+            payload = {"success": True}
+            payload.update(editais)
+            self._send_json(payload)
             return
 
         if path == "/health":
@@ -134,9 +145,7 @@ class ICCollectHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            tipo = qs.get("tipo", ["ic"])[0]
-            if tipo not in ("ic", "aeri"):
-                tipo = "ic"
+            tipo = normalizar_tipo(qs.get("tipo", ["ic"])[0])
             dados = get_top5_consultas(tipo)
 
             # Retorna o JSON
@@ -181,9 +190,7 @@ class ICCollectHandler(BaseHTTPRequestHandler):
             success = qs.get("success", [None])[0]
             success = int(success) if success is not None else None
 
-            tipo = qs.get("tipo", ["ic"])[0]
-            if tipo not in ("ic", "aeri"):
-                tipo = "ic"
+            tipo = normalizar_tipo(qs.get("tipo", ["ic"])[0])
 
             consultas = get_consultas(success, page, per_page, tipo)
             total = count_consultas(success, tipo)
@@ -281,9 +288,7 @@ class ICCollectHandler(BaseHTTPRequestHandler):
                 self._send_json({"success": False, "message": "Informe a URL completa ou o código.", "code": None}, HTTPStatus.BAD_REQUEST)
                 return
 
-            tipo_lattes = payload.get("tipo", "ic")
-            if tipo_lattes not in ("ic", "aeri"):
-                tipo_lattes = "ic"
+            tipo_lattes = normalizar_tipo(payload.get("tipo", "ic"))
 
             try:
                 resultado = buscaLattes(url_lattes, tipo_lattes)
@@ -299,6 +304,77 @@ class ICCollectHandler(BaseHTTPRequestHandler):
                     },
                     HTTPStatus.INTERNAL_SERVER_ERROR,
                 )
+            return
+
+        elif self.path == "/api/lattes-pdf":
+            conteudo_base64 = payload.get("pdf_base64") or ""
+            if not conteudo_base64:
+                self._send_json(
+                    {"success": False, "message": "Nenhum arquivo recebido."},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            try:
+                conteudo = base64.b64decode(conteudo_base64, validate=True)
+            except Exception:
+                self._send_json(
+                    {"success": False, "message": "Arquivo inválido."},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            if len(conteudo) > MAX_PDF_BYTES:
+                self._send_json(
+                    {
+                        "success": False,
+                        "message": f"PDF muito grande (limite de {MAX_PDF_BYTES // (1024 * 1024)} MB).",
+                    },
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                )
+                return
+
+            if not conteudo.startswith(b"%PDF"):
+                self._send_json(
+                    {"success": False, "message": "O arquivo enviado não é um PDF."},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            try:
+                from lattes_pdf import extrair_do_pdf
+            except ImportError:
+                self._send_json(
+                    {
+                        "success": False,
+                        "message": "Leitura de PDF indisponível: instale a dependência com "
+                                   "'pip install pdfplumber'.",
+                    },
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+
+            try:
+                dados_pdf = extrair_do_pdf(conteudo)
+            except Exception as exc:
+                self._send_json(
+                    {"success": False, "message": f"Não foi possível ler o PDF: {exc}"},
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                )
+                return
+
+            self._send_json({
+                "success": True,
+                "message": "PDF lido com sucesso.",
+                "nome": dados_pdf.get("nome"),
+                "dados": {
+                    chave: valor
+                    for chave, valor in dados_pdf.items()
+                    if chave != "projetos_extensao"
+                },
+                "projetos_extensao": dados_pdf.get("projetos_extensao") or [],
+                "sugestoes": sugerir_preenchimento_extensao(dados_pdf),
+            })
             return
 
         elif self.path == "/api/sync-sheets":
@@ -340,11 +416,14 @@ class ICCollectHandler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/api/editais":
-            tipo = str(payload.get("tipo", "")).strip()
+            tipo = normalizar_tipo_edital(payload.get("tipo"))
             ano  = str(payload.get("ano", "")).strip()
             url  = str(payload.get("url", "")).strip()
-            if tipo not in ("ic", "aeri"):
-                self._send_json({"success": False, "message": "tipo deve ser 'ic' ou 'aeri'."}, HTTPStatus.BAD_REQUEST)
+            if tipo is None:
+                self._send_json(
+                    {"success": False, "message": "tipo deve ser 'ic', 'aeri' ou 'extensao'."},
+                    HTTPStatus.BAD_REQUEST,
+                )
                 return
             salvar_edital(tipo, ano, url)
             self._send_json({"success": True, "message": "Edital salvo com sucesso."})
@@ -356,8 +435,20 @@ def run():
     init_database()
     host = os.getenv("HOST", HOST)
     port = int(os.getenv("PORT", str(PORT)))
+
+    if usando_banco_local():
+        usuario = os.getenv("DEFAULT_DASHBOARD_USERNAME", "admin")
+        senha = os.getenv("DEFAULT_DASHBOARD_PASSWORD", "")
+        print("─" * 62)
+        print("MODO LOCAL — TURSO_URL não definida.")
+        print(f"Banco SQLite: {CAMINHO_BANCO_LOCAL}")
+        print(f"Dashboard:    usuário '{usuario}' / senha '{senha}'")
+        print("Para usar o Turso, defina TURSO_URL e TURSO_AUTH_TOKEN.")
+        print("─" * 62)
+
     server = ThreadingHTTPServer((host, port), ICCollectHandler)
-    print(f"Servidor disponível em http://{host}:{port}")
+    endereco = "localhost" if host in ("0.0.0.0", "") else host
+    print(f"Servidor disponível em http://{endereco}:{port}")
     server.serve_forever()
 
 

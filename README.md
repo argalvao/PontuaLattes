@@ -2,7 +2,7 @@
 
 Projeto de extensão desenvolvido na disciplina EXA618: Programação para Redes, da Universidade Estadual de Feira de Santana (UEFS).
 
-Sistema que analisa o currículo Lattes e calcula automaticamente o barema para avaliação de candidatos a bolsas de **Iniciação Científica (IC)** e **Assessoria Especial de Relações Institucionais (AERI)** da UEFS.
+Sistema que analisa o currículo Lattes e calcula automaticamente o barema para avaliação de candidatos a bolsas de **Iniciação Científica (IC)**, **Assessoria Especial de Relações Institucionais (AERI)** e **Extensão (PIBEX)** da UEFS.
 
 - Repositório: [github.com/joaorochajr/PontuaLattes](https://github.com/joaorochajr/PontuaLattes)
 - Planilha de backup: [Google Sheets](https://docs.google.com/spreadsheets/d/1f78in2E1nG3cuPPQq884jU1-7XRQxHvgEHYLU5SRNUo/edit?gid=149912474#gid=149912474)
@@ -14,17 +14,18 @@ Sistema que analisa o currículo Lattes e calcula automaticamente o barema para 
 
 1. [Visão geral](#visão-geral)
 2. [Funcionalidades](#funcionalidades)
-3. [Estrutura do projeto](#estrutura-do-projeto)
-4. [Como executar localmente](#como-executar-localmente)
-5. [Banco de dados — Turso](#banco-de-dados--turso)
-6. [Backup no Google Sheets](#backup-no-google-sheets)
-7. [Deploy no Vercel](#deploy-no-vercel)
+3. [Baremas suportados](#baremas-suportados)
+4. [Estrutura do projeto](#estrutura-do-projeto)
+5. [Como executar localmente](#como-executar-localmente)
+6. [Banco de dados — Turso](#banco-de-dados--turso)
+7. [Backup no Google Sheets](#backup-no-google-sheets)
+8. [Deploy no Vercel](#deploy-no-vercel)
 
 ---
 
 ## Visão geral
 
-O sistema recebe uma URL pública do currículo Lattes (ou apenas o código), consulta os dados públicos disponíveis no CNPq/Buscatextual, extrai indicadores bibliográficos e calcula automaticamente a pontuação do barema conforme as regras do edital selecionado (IC ou AERI).
+O sistema recebe uma URL pública do currículo Lattes (ou apenas o código), consulta os dados públicos disponíveis no CNPq/Buscatextual, extrai indicadores bibliográficos e calcula automaticamente a pontuação do barema conforme as regras do edital selecionado (IC, AERI ou PIBEX).
 
 O backend é um único servidor Python (`BaseHTTPRequestHandler`) que serve a SPA e expõe os endpoints da API. O banco de dados é o [Turso](https://turso.tech) (libSQL).
 
@@ -33,7 +34,8 @@ O backend é um único servidor Python (`BaseHTTPRequestHandler`) que serve a SP
 ## Funcionalidades
 
 - Consulta pública do barema sem necessidade de login
-- Suporte a editais de **IC** e **AERI** com regras de pontuação distintas
+- Suporte a editais de **IC**, **AERI** e **PIBEX (Extensão)** com regras de pontuação distintas
+- No PIBEX, escolha entre o barema do **docente/orientador** (Anexo II-A) e o do **discente/candidato** (Anexo II-B)
 - Link dinâmico para o edital vigente configurável pelo dashboard
 - Autenticação com token de sessão para acesso ao dashboard
 - Histórico de consultas com paginação
@@ -44,16 +46,55 @@ O backend é um único servidor Python (`BaseHTTPRequestHandler`) que serve a SP
 
 ---
 
+## Baremas suportados
+
+O edital escolhido na tela inicial define o `tipo` enviado à API e a tabela em que a pontuação é gravada.
+
+| Opção na tela | `tipo` na API | Tabela no banco | Máximo | Período |
+|---|---|---|---|---|
+| Edital IC | `ic` | `barema` | 60 | últimos 5 anos |
+| Edital AERI | `aeri` | `barema_aeri` | 40 | currículo completo |
+| Edital PIBEX → Docente/Orientador | `extensao_docente` | `barema_extensao_docente` | 40 | currículo completo |
+| Edital PIBEX → Discente/Candidato | `extensao_discente` | `barema_extensao_discente` | 20 | currículo completo |
+
+### PIBEX — Anexo II do Edital PIBEX 01/2026 (PROEX/UEFS)
+
+**A — Docente/Orientador (40 pontos)**
+
+| Seção | Máximo | Origem |
+|---|---|---|
+| I — Titulação (maior titulação, não cumulativa) | 4 | Lattes |
+| II — Atuação na extensão | 8 | preenchimento manual |
+| III — Indicadores de produção científica, tecnológica e artística | 18 | Lattes |
+| IV — Formação de recursos humanos (orientações concluídas) | 10 | Lattes |
+
+**B — Discente/Candidato (20 pontos)**
+
+| Seção | Máximo | Origem |
+|---|---|---|
+| I — Atuação na extensão (bolsista/voluntário) | 6 | preenchimento manual |
+| II — Indicadores de produção científica, tecnológica e artística | 5 | Lattes |
+| III — Participação/organização de eventos acadêmicos | 9 | preenchimento manual |
+
+O item **C — Plano de Trabalho** (40 pontos) do edital é avaliação humana e não faz parte do sistema.
+
+As seções marcadas como *preenchimento manual* aparecem na tela com todos os critérios e pesos do edital, porém zeradas: os gráficos públicos do Lattes não expõem projetos de extensão nem participação em eventos. O avaliador soma esses pontos manualmente e o sistema registra uma observação indicando isso.
+
+Os pesos, critérios e tetos ficam concentrados nas constantes `_EXTENSAO_*` do arquivo `API/controller.py` — basta editá-las quando um novo edital mudar a pontuação.
+
+---
+
 ## Estrutura do projeto
 
 ```
 PontuaLattes/
 ├── API/
 │   ├── main.py                # servidor HTTP, roteamento e endpoints
-│   ├── controller.py          # lógica de scraping, cálculo do barema IC e AERI
+│   ├── controller.py          # lógica de scraping, cálculo dos baremas IC, AERI e PIBEX
 │   ├── service.py             # coleta dos dados públicos do Lattes
 │   ├── database.py            # fachada do banco (reexporta funções do turso_store)
 │   ├── turso_store.py         # camada de persistência — Turso/libSQL
+│   ├── local_store.py         # banco local em SQLite (usado sem TURSO_URL)
 │   ├── google_sheets_store.py # camada de backup — Google Sheets
 │   ├── sync_to_sheets.py      # script CLI para sincronização manual
 │   └── requirements.txt       # dependências Python
@@ -79,29 +120,57 @@ PontuaLattes/
 ### Pré-requisitos
 
 - Python 3.10 ou superior
-- Acesso à internet (para consultar o Lattes e o Turso)
+- Acesso à internet (para consultar o Lattes)
 
-### 1. Clone o repositório
+### Modo local — sem Turso (mais rápido)
+
+Se a variável `TURSO_URL` não estiver definida, o sistema grava tudo em um arquivo SQLite
+(`pontualattes.db`, criado na raiz do projeto). Não é preciso criar conta em lugar nenhum.
+
+```bash
+pip install requests
+cd API
+python main.py
+```
+
+Acesse `http://localhost:8000`. O terminal mostra um aviso de modo local com o caminho do
+banco e as credenciais do dashboard.
+
+O usuário do dashboard é `admin` e a senha vem de `DEFAULT_DASHBOARD_PASSWORD`
+(vazia se a variável não for definida). Para escolher outro caminho de banco, use
+`LOCAL_DB_PATH`.
+
+No Windows (PowerShell), para definir a senha antes de subir:
+
+```powershell
+$env:DEFAULT_DASHBOARD_PASSWORD = "pontualattes"
+cd API
+python main.py
+```
+
+### Modo Turso (usado em produção)
+
+#### 1. Clone o repositório
 
 ```bash
 git clone https://github.com/argalvao/PontuaLattes.git
 cd PontuaLattes
 ```
 
-### 2. Crie e ative o ambiente virtual
+#### 2. Crie e ative o ambiente virtual
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-### 3. Instale as dependências
+#### 3. Instale as dependências
 
 ```bash
 pip install -r API/requirements.txt
 ```
 
-### 4. Configure as variáveis de ambiente
+#### 4. Configure as variáveis de ambiente
 
 Crie um arquivo `.env` na raiz do projeto:
 
@@ -118,7 +187,7 @@ GOOGLE_SHEETS_SPREADSHEET_ID=
 GOOGLE_SERVICE_ACCOUNT_JSON=
 ```
 
-### 5. Inicie o servidor
+#### 5. Inicie o servidor
 
 ```bash
 cd API
@@ -131,7 +200,7 @@ Acesse em: `http://localhost:8000`
 
 ## Banco de dados — Turso
 
-O projeto usa o [Turso](https://turso.tech) como banco de dados (SQLite distribuído). Siga os passos abaixo para criar sua própria instância gratuitamente.
+O projeto usa o [Turso](https://turso.tech) como banco de dados (SQLite distribuído) quando `TURSO_URL` está definida — é assim que roda em produção. Sem essa variável, ele cai automaticamente no modo local com SQLite em arquivo (veja a seção anterior). Siga os passos abaixo para criar sua própria instância gratuitamente.
 
 ### 1. Crie uma conta no Turso
 
@@ -190,6 +259,8 @@ As seguintes abas são criadas/atualizadas na planilha:
 |---|---|
 | `barema` | Pontuações do barema IC |
 | `barema_aeri` | Pontuações do barema AERI |
+| `barema_extensao_docente` | Pontuações do barema PIBEX (docente) |
+| `barema_extensao_discente` | Pontuações do barema PIBEX (discente) |
 | `consultas` | Histórico completo de consultas |
 | `editais` | Editais cadastrados |
 
@@ -322,12 +393,13 @@ git commit --allow-empty -m "chore: redeploy" && git push origin main
 
 | Variável | Obrigatória | Descrição |
 |---|---|---|
-| `TURSO_URL` | Sim | URL do banco Turso (ex: `https://...turso.io`) |
-| `TURSO_AUTH_TOKEN` | Sim | Token JWT de autenticação do Turso |
-| `DEFAULT_DASHBOARD_USERNAME` | Sim | Usuário administrador criado na primeira inicialização |
-| `DEFAULT_DASHBOARD_PASSWORD` | Sim | Senha do usuário administrador |
+| `TURSO_URL` | Não | URL do banco Turso (ex: `https://...turso.io`). Sem ela, o sistema usa SQLite local |
+| `TURSO_AUTH_TOKEN` | Se `TURSO_URL` | Token JWT de autenticação do Turso |
+| `DEFAULT_DASHBOARD_USERNAME` | Não | Usuário administrador criado na primeira inicialização (padrão: `admin`) |
+| `DEFAULT_DASHBOARD_PASSWORD` | Não | Senha do usuário administrador (padrão: vazia) |
 | `GOOGLE_SHEETS_SPREADSHEET_ID` | Não | ID da planilha Google Sheets para backup |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | Não | JSON da Service Account (string direta ou base64) |
+| `LOCAL_DB_PATH` | Não | Caminho do SQLite no modo local (padrão: `pontualattes.db` na raiz) |
 | `HOST` | Não | Endereço de bind local (padrão: `0.0.0.0`) |
 | `PORT` | Não | Porta local (padrão: `8000`) |
 

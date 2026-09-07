@@ -13,10 +13,12 @@ Variáveis de ambiente necessárias (pode usar um arquivo .env):
     GOOGLE_SERVICE_ACCOUNT_JSON   (string JSON ou base64 da Service Account)
 
 Abas geradas/atualizadas na planilha:
-    barema        – pontuações IC
-    barema_aeri   – pontuações AERI
-    consultas     – histórico de consultas
-    editais       – editais cadastrados
+    barema                    – pontuações IC
+    barema_aeri               – pontuações AERI
+    barema_extensao_docente   – pontuações PIBEX (docente)
+    barema_extensao_discente  – pontuações PIBEX (discente)
+    consultas                 – histórico de consultas
+    editais                   – editais cadastrados
 """
 
 import os
@@ -51,24 +53,38 @@ def run():
     _check_env()
 
     # Importações locais (evita erro de import antes de .env estar carregado)
-    from turso_store import dump_barema, dump_barema_aeri, dump_consultas, dump_editais
+    from turso_store import (
+        dump_barema, dump_barema_aeri, dump_consultas, dump_editais,
+        dump_barema_extensao_docente, dump_barema_extensao_discente,
+    )
     from google_sheets_store import sync_all
 
     print("Lendo dados do Turso...")
-    barema_rows      = dump_barema()
-    barema_aeri_rows = dump_barema_aeri()
-    consultas_rows   = dump_consultas()
-    editais_rows     = dump_editais()
+    barema_rows          = dump_barema()
+    barema_aeri_rows     = dump_barema_aeri()
+    barema_ext_doc_rows  = dump_barema_extensao_docente()
+    barema_ext_dis_rows  = dump_barema_extensao_discente()
+    consultas_rows       = dump_consultas()
+    editais_rows         = dump_editais()
 
     print(
-        f"  barema:      {len(barema_rows)} registros\n"
-        f"  barema_aeri: {len(barema_aeri_rows)} registros\n"
-        f"  consultas:   {len(consultas_rows)} registros\n"
-        f"  editais:     {len(editais_rows)} registros"
+        f"  barema:                   {len(barema_rows)} registros\n"
+        f"  barema_aeri:              {len(barema_aeri_rows)} registros\n"
+        f"  barema_extensao_docente:  {len(barema_ext_doc_rows)} registros\n"
+        f"  barema_extensao_discente: {len(barema_ext_dis_rows)} registros\n"
+        f"  consultas:                {len(consultas_rows)} registros\n"
+        f"  editais:                  {len(editais_rows)} registros"
     )
 
     print("Sincronizando com o Google Sheets...")
-    sync_all(barema_rows, barema_aeri_rows, consultas_rows, editais_rows)
+    sync_all(
+        barema_rows,
+        barema_aeri_rows,
+        barema_ext_doc_rows,
+        barema_ext_dis_rows,
+        consultas_rows,
+        editais_rows,
+    )
 
     print("Sincronização concluída com sucesso.")
 

@@ -3,7 +3,13 @@ import re
 from datetime import date
 from html import unescape
 
-from database import registrar_barema, registrar_barema_aeri, registrar_consulta
+from database import (
+	registrar_barema,
+	registrar_barema_aeri,
+	registrar_barema_extensao_discente,
+	registrar_barema_extensao_docente,
+	registrar_consulta,
+)
 from service import getLattesCode, getLattesIndexHtml, getLattesPViewHtml
 
 
@@ -191,6 +197,13 @@ def extract_publications(index_html):
 	}
 
 
+def _e_variavel_de_anos(nome_variavel):
+	# As series de rotulos ("barraAnos...") nao sao producoes; se entrarem na
+	# busca por padroes, os proprios anos acabam somados como pontuacao.
+	# Usada apenas pelo barema PIBEX: IC e AERI seguem o comportamento original.
+	return nome_variavel.lower().startswith("barraanos")
+
+
 def _somar_series_por_ano(variaveis_js, nome_anos, padroes, ano_minimo=None):
 	ano_minimo = _obter_ano_minimo_barema() if ano_minimo is None else ano_minimo
 	anos_originais = variaveis_js.get(nome_anos) or []
@@ -311,13 +324,19 @@ def _contar_patentes(preview_html, index_html):
 	return 0
 
 
-def _detalhar_item(quantidade, peso):
+def _detalhar_item(quantidade, peso, teto_pontos=None):
 	pontos = quantidade * peso
-	return {
+	if teto_pontos is not None:
+		pontos = min(pontos, teto_pontos)
+
+	detalhe = {
 		"quantidade": quantidade,
 		"peso": peso,
 		"pontos": _normalizar_pontuacao(pontos),
 	}
+	if teto_pontos is not None:
+		detalhe["teto_pontos"] = teto_pontos
+	return detalhe
 
 
 def _obter_total_publicacoes_periodo(publicacoes, ano_minimo):
@@ -625,6 +644,508 @@ def calcularBaremaAERI(resultado=None):
 	}
 
 
+# ---------------------------------------------------------------------------
+# Barema PIBEX (Extensao) - Anexo II do Edital PIBEX 01/2026 - PROEX/UEFS
+#
+# A - Docente/Orientador  (total maximo 40): titulacao 4, atuacao na extensao 8,
+#     indicadores de producao 18, formacao de recursos humanos 10.
+# B - Discente/Candidato  (total maximo 20): atuacao na extensao 6,
+#     indicadores de producao 5, participacao/organizacao de eventos 9.
+#
+# O edital nao define recorte temporal para estes baremas, portanto o curriculo
+# e considerado por inteiro (ano_minimo = 0).
+# ---------------------------------------------------------------------------
+
+_ANOS_BIBLIOGRAFICAS = "barraAnosProducoesBibliograficas"
+_ANOS_TECNICAS = "barraAnosProducoesTecnicas"
+_ANOS_PATENTES = "barraAnosPatentes"
+_ANOS_CULTURAIS = "barraAnosProducoesCulturais"
+_ANOS_ORIENTACOES = "barraAnosOrientacoes"
+
+
+def _resolver_variaveis(variaveis_js, nomes_exatos=(), padroes=()):
+	# Resolve os nomes das series anuais do grafico do Lattes. Os nomes exatos
+	# sao tentados primeiro; os padroes de tokens funcionam apenas como reserva,
+	# o que evita somar a mesma serie mais de uma vez.
+	mapa = {nome.lower(): nome for nome in variaveis_js}
+	encontrados = []
+
+	for nome in nomes_exatos:
+		real = mapa.get(nome.lower())
+		if real and real not in encontrados:
+			encontrados.append(real)
+
+	if encontrados:
+		return encontrados
+
+	for nome_lower, nome in mapa.items():
+		if _e_variavel_de_anos(nome):
+			continue
+		if any(all(token in nome_lower for token in padrao) for padrao in padroes):
+			if nome not in encontrados:
+				encontrados.append(nome)
+
+	return encontrados
+
+
+def _somar_grupo(variaveis_js, nome_anos, nomes_exatos=(), padroes=(), ano_minimo=0):
+	anos = _normalizar_anos(variaveis_js.get(nome_anos) or [])
+	indices = [
+		indice
+		for indice, ano in enumerate(anos)
+		if str(ano).isdigit() and int(ano) >= ano_minimo
+	]
+
+	if not indices:
+		return 0
+
+	total = 0
+	for nome in _resolver_variaveis(variaveis_js, nomes_exatos, padroes):
+		serie = _normalizar_serie(variaveis_js.get(nome), len(anos))
+		total += sum(serie[indice] for indice in indices)
+
+	return total
+
+
+def _calcular_titulacao_extensao(preview_html):
+	# Somente a maior titulacao, nao cumulativa: doutorado 4, mestrado 3,
+	# especializacao 1.
+	texto = unescape(re.sub(r"<[^>]+>", " ", preview_html or ""))
+	texto = re.sub(r"\s+", " ", texto).strip().lower()
+
+	if re.search(r"\bdoutor(?:a|ado)?\b|\bph\.?d\b", texto):
+		return "Doutorado", 4
+
+	if re.search(r"\bmestrado\b|\bmestre\b|\bmestra\b", texto):
+		return "Mestrado", 3
+
+	if re.search(r"\bespecializa(?:ção|cao)\b|\bespecialista\b", texto):
+		return "Especialização", 1
+
+	return "Não identificado", 0
+
+
+def _coletar_quantidades_extensao(variaveis_js, preview_html, index_html):
+	quantidades = {}
+
+	quantidades["artigos_periodicos"] = _somar_grupo(
+		variaveis_js, _ANOS_BIBLIOGRAFICAS, ("valoresArtigosPublicadosPeriodicos",)
+	)
+	quantidades["trabalhos_anais"] = _somar_grupo(
+		variaveis_js, _ANOS_BIBLIOGRAFICAS, ("valoresTrabalhosPublicadosEventos",)
+	)
+	quantidades["resumos_anais"] = _somar_grupo(
+		variaveis_js, _ANOS_BIBLIOGRAFICAS, ("valoresTrabalhosResumidosPublicadosEventos",)
+	)
+	quantidades["livros"] = _somar_grupo(
+		variaveis_js, _ANOS_BIBLIOGRAFICAS, ("valoresLivros",)
+	)
+	quantidades["capitulos"] = _somar_grupo(
+		variaveis_js, _ANOS_BIBLIOGRAFICAS, ("valoresCapitulos",)
+	)
+
+	quantidades["apresentacao_trabalho"] = _somar_grupo(
+		variaveis_js,
+		_ANOS_TECNICAS,
+		("valoesApresentacoesDeTrabalhos", "valoresApresentacoesDeTrabalhos"),
+		(("apresenta", "trabalho"),),
+	)
+	quantidades["programa_computador"] = _somar_grupo(
+		variaveis_js,
+		_ANOS_TECNICAS,
+		(
+			"valoesProgramasComputadorSemRegistro",
+			"valoesProgramasComputador",
+			"valoesProgramaComputador",
+		),
+		(("programa", "computador"),),
+	)
+	quantidades["produtos"] = _somar_grupo(
+		variaveis_js,
+		_ANOS_TECNICAS,
+		("valoesProdutos", "valoresProdutos"),
+		(("produto",),),
+	)
+	quantidades["processos"] = _somar_grupo(
+		variaveis_js,
+		_ANOS_TECNICAS,
+		("valoesProcessoOuTecnica", "valoesProcessosOuTecnicas", "valoesProcessos"),
+		(("processo",),),
+	)
+	quantidades["trabalhos_tecnicos"] = _somar_grupo(
+		variaveis_js,
+		_ANOS_TECNICAS,
+		("valoesTrabalhosTecnicos", "valoresTrabalhosTecnicos"),
+		(("trabalhostecnicos",),),
+	)
+
+	quantidades["patentes"] = _somar_grupo(
+		variaveis_js,
+		_ANOS_PATENTES,
+		("valoesPatentes", "valoresPatentes"),
+		(("patente",),),
+	)
+	if not quantidades["patentes"]:
+		quantidades["patentes"] = _contar_patentes(preview_html, index_html)
+
+	quantidades["cultivar"] = _somar_grupo(
+		variaveis_js,
+		_ANOS_PATENTES,
+		("valoesCultivarProtegida", "valoresCultivarProtegida"),
+		(("cultivar",),),
+	)
+
+	quantidades["artes_cenicas"] = _somar_grupo(
+		variaveis_js,
+		_ANOS_CULTURAIS,
+		("valoesArtesCenicas", "valoresArtesCenicas"),
+		(("cenic",),),
+	)
+	quantidades["artes_visuais"] = _somar_grupo(
+		variaveis_js,
+		_ANOS_CULTURAIS,
+		("valoesArtesVisuais", "valoresArtesVisuais"),
+		(("visuai",), ("visual",)),
+	)
+	quantidades["musica"] = _somar_grupo(
+		variaveis_js,
+		_ANOS_CULTURAIS,
+		("valoesMusica", "valoresMusica"),
+		(("music",),),
+	)
+
+	# Sobra das producoes culturais que nao caiu em nenhuma das tres linhas
+	# acima (por exemplo, "outras producoes artisticas").
+	total_culturais = _somar_grupo(
+		variaveis_js,
+		_ANOS_CULTURAIS,
+		(),
+		(("artes",), ("music",), ("cultur",), ("artist",)),
+	)
+	quantidades["outras_culturais"] = max(
+		0,
+		total_culturais
+		- quantidades["artes_cenicas"]
+		- quantidades["artes_visuais"]
+		- quantidades["musica"],
+	)
+
+	quantidades["orientacao_doutorado"] = _somar_grupo(
+		variaveis_js, _ANOS_ORIENTACOES, ("valoresDoutorado",)
+	)
+	quantidades["orientacao_mestrado"] = _somar_grupo(
+		variaveis_js, _ANOS_ORIENTACOES, ("valoresMestrado",)
+	)
+	quantidades["supervisao_pos_doutorado"] = _somar_grupo(
+		variaveis_js,
+		_ANOS_ORIENTACOES,
+		("valoresPosDoutorado", "valoresSupervisaoPosDoutorado"),
+		(("pos", "doutorado"),),
+	)
+	quantidades["orientacao_demais"] = _somar_grupo(
+		variaveis_js,
+		_ANOS_ORIENTACOES,
+		("valoresOutrasOrientacoes",),
+		(("outras", "orienta"),),
+	)
+
+	return quantidades
+
+
+def _montar_secao(itens_config, quantidades, teto, editavel=False):
+	# itens_config: sequencia de (rotulo, chave_ou_None, peso, teto_do_item).
+	# Chave None significa criterio que os graficos publicos do Lattes nao
+	# expoem: entra zerado e a secao e marcada como editavel, para o avaliador
+	# digitar a quantidade na tela.
+	itens = {}
+	for rotulo, chave, peso, teto_item in itens_config:
+		quantidade = quantidades.get(chave, 0) if chave else 0
+		itens[rotulo] = _detalhar_item(quantidade, peso, teto_item)
+
+	bruto = _normalizar_pontuacao(sum(item["pontos"] for item in itens.values()))
+
+	secao = {
+		"itens": itens,
+		"subtotal_bruto": bruto,
+		"subtotal_limitado": _normalizar_pontuacao(min(bruto, teto)),
+		"teto": teto,
+	}
+	if editavel:
+		secao["editavel"] = True
+	return secao
+
+
+_EXTENSAO_ATUACAO_DOCENTE = (
+	("Coordenação de Programa/Projeto de Extensão (até dois anos)", None, 1.5, None),
+	("Coordenação de Programa/Projeto de Extensão (acima de dois anos)", None, 3, None),
+	("Integrante da equipe de Programa/Projeto (até dois anos)", None, 0.5, None),
+	("Integrante da equipe de Programa/Projeto (acima de dois anos)", None, 1, None),
+)
+
+_EXTENSAO_PRODUCAO_DOCENTE = (
+	("Artigos completos publicados em periódicos", "artigos_periodicos", 2, None),
+	("Trabalhos publicados em anais de evento", "trabalhos_anais", 1, None),
+	("Resumos publicados em anais de eventos", "resumos_anais", 0.5, None),
+	("Livros organizados ou publicados", "livros", 2, None),
+	("Capítulos de livro", "capitulos", 1.5, None),
+	("Apresentação de trabalho", "apresentacao_trabalho", 1, None),
+	("Programa de computador sem registro", "programa_computador", 0.5, None),
+	("Produtos", "produtos", 1, None),
+	("Processos ou técnica", "processos", 1, None),
+	("Trabalhos técnicos", "trabalhos_tecnicos", 1, None),
+	("Patente", "patentes", 1, None),
+	("Cultivar protegida", "cultivar", 0.5, None),
+	("Artes cênicas", "artes_cenicas", 1, None),
+	("Artes visuais", "artes_visuais", 1, None),
+	("Música", "musica", 1, None),
+	("Outras produções culturais", "outras_culturais", 1, None),
+)
+
+_EXTENSAO_FORMACAO_DOCENTE = (
+	("Doutorado (orientador)", "orientacao_doutorado", 2, None),
+	("Mestrado (orientador)", "orientacao_mestrado", 1, None),
+	("Supervisão de pós-doutorado", "supervisao_pos_doutorado", 1, None),
+	(
+		"Iniciação científica, especialização, TCC e demais orientações concluídas",
+		"orientacao_demais",
+		1,
+		None,
+	),
+)
+
+_EXTENSAO_ATUACAO_DISCENTE = (
+	("Bolsista (acima de 12 meses)", None, 3, None),
+	("Bolsista (até 12 meses)", None, 2, None),
+	("Voluntário (acima de 12 meses)", None, 1, None),
+	("Voluntário (até 12 meses)", None, 0.5, None),
+)
+
+_EXTENSAO_PRODUCAO_DISCENTE = (
+	("Artigos completos publicados em periódicos", "artigos_periodicos", 2, None),
+	("Trabalhos publicados em anais de evento", "trabalhos_anais", 1.5, None),
+	("Resumos publicados em anais de eventos", "resumos_anais", 1.5, None),
+	("Livros organizados ou publicados", "livros", 2, None),
+	("Capítulos de livro", "capitulos", 2, None),
+	("Apresentação de trabalho", "apresentacao_trabalho", 1, None),
+	("Programa de computador", "programa_computador", 0.5, None),
+	("Produtos", "produtos", 0.5, None),
+	("Processos ou técnica", "processos", 0.5, None),
+	("Trabalhos técnicos", "trabalhos_tecnicos", 0.5, None),
+	("Patente", "patentes", 0.5, None),
+	("Cultivar protegida", "cultivar", 0.5, None),
+	("Artes cênicas", "artes_cenicas", 0.5, None),
+	("Artes visuais", "artes_visuais", 0.5, None),
+	("Música", "musica", 0.5, None),
+	("Outras produções culturais", "outras_culturais", 0.5, None),
+)
+
+# No Anexo II-B a coluna e "PONTUACAO MAXIMA": cada linha tem teto proprio.
+_EXTENSAO_EVENTOS_DISCENTE = (
+	("Participação em eventos", None, 0.5, 5),
+	("Coordenação de eventos técnico-científicos", None, 1, 2),
+	("Ministrante de oficina/minicurso", None, 1, 2),
+)
+
+_OBSERVACAO_PERIODO_EXTENSAO = (
+	"O Edital PIBEX não define recorte temporal para o barema: foi considerado o currículo completo."
+)
+
+
+# ---------------------------------------------------------------------------
+# Preenchimento a partir do PDF do curriculo
+#
+# As secoes de atuacao na extensao e de eventos nao existem na pagina publica
+# de indicadores do CNPq. Quando o avaliador envia o PDF do curriculo, o
+# lattes_pdf le esses dados e aqui eles sao traduzidos para as linhas exatas
+# do barema, para a tela preencher os campos editaveis.
+# ---------------------------------------------------------------------------
+
+def _rotulo(config, indice):
+	return config[indice][0]
+
+
+def sugerir_preenchimento_extensao(dados_pdf):
+	dados_pdf = dados_pdf or {}
+
+	def quantidade(chave):
+		try:
+			return max(0, int(dados_pdf.get(chave) or 0))
+		except (TypeError, ValueError):
+			return 0
+
+	atuacao_docente = {
+		_rotulo(_EXTENSAO_ATUACAO_DOCENTE, 0): quantidade("coordenacao_ate_2_anos"),
+		_rotulo(_EXTENSAO_ATUACAO_DOCENTE, 1): quantidade("coordenacao_acima_2_anos"),
+		_rotulo(_EXTENSAO_ATUACAO_DOCENTE, 2): quantidade("integrante_ate_2_anos"),
+		_rotulo(_EXTENSAO_ATUACAO_DOCENTE, 3): quantidade("integrante_acima_2_anos"),
+	}
+
+	eventos_discente = {
+		_rotulo(_EXTENSAO_EVENTOS_DISCENTE, 0): quantidade("participacao_eventos"),
+		# O Lattes agrupa tudo em "Organizacao de eventos"; o edital separa
+		# coordenacao de ministrante de oficina. A sugestao vai na coordenacao
+		# e o avaliador confere.
+		_rotulo(_EXTENSAO_EVENTOS_DISCENTE, 1): quantidade("organizacao_eventos"),
+	}
+
+	avisos = []
+	if quantidade("papel_indefinido"):
+		avisos.append(
+			f"{quantidade('papel_indefinido')} projeto(s) de extensão sem papel identificado "
+			"no PDF — confira manualmente."
+		)
+	if quantidade("organizacao_eventos"):
+		avisos.append(
+			"A organização de eventos foi lançada em 'Coordenação de eventos técnico-científicos'. "
+			"Se algum for oficina ou minicurso ministrado, mova para a linha correspondente."
+		)
+	avisos.append(
+		"O Lattes não distingue bolsista de voluntário em projeto de extensão: "
+		"a seção 'Atuação na extensão' do barema discente continua manual."
+	)
+
+	return {
+		"extensao_docente": {"atuacao_extensao": atuacao_docente},
+		"extensao_discente": {"participacao_eventos": eventos_discente},
+		"avisos": avisos,
+	}
+
+
+def _preparar_dados_extensao(resultado, rotulo):
+	dados_lattes = getConteudo(resultado) if resultado is not None else conteudo_lattes
+
+	if not dados_lattes:
+		return None, {
+			"success": False,
+			"message": "Nenhum conteúdo do Lattes foi carregado.",
+		}
+
+	if not dados_lattes.get("success"):
+		return None, {
+			"success": False,
+			"message": f"Não foi possível calcular o barema {rotulo} sem uma coleta válida.",
+			"detalhe": dados_lattes.get("message"),
+		}
+
+	return dados_lattes, None
+
+
+def calcularBaremaExtensaoDocente(resultado=None):
+	dados_lattes, erro = _preparar_dados_extensao(resultado, "PIBEX docente")
+	if erro:
+		return erro
+
+	preview_html = dados_lattes.get("preview_html") or ""
+	index_html = dados_lattes.get("index_html") or ""
+	variaveis_js = _extrair_variaveis_js(index_html)
+	quantidades = _coletar_quantidades_extensao(variaveis_js, preview_html, index_html)
+
+	nivel_titulacao, pontos_titulacao = _calcular_titulacao_extensao(preview_html)
+	titulacao = {
+		"nivel_maximo": nivel_titulacao,
+		"itens": {
+			"Especialização": _detalhar_item(1 if nivel_titulacao == "Especialização" else 0, 1),
+			"Mestrado": _detalhar_item(1 if nivel_titulacao == "Mestrado" else 0, 3),
+			"Doutorado": _detalhar_item(1 if nivel_titulacao == "Doutorado" else 0, 4),
+		},
+		"subtotal_bruto": _normalizar_pontuacao(pontos_titulacao),
+		"subtotal_limitado": _normalizar_pontuacao(min(pontos_titulacao, 4)),
+		"teto": 4,
+	}
+
+	atuacao = _montar_secao(_EXTENSAO_ATUACAO_DOCENTE, quantidades, 8, editavel=True)
+	producao = _montar_secao(_EXTENSAO_PRODUCAO_DOCENTE, quantidades, 18)
+	formacao = _montar_secao(_EXTENSAO_FORMACAO_DOCENTE, quantidades, 10)
+
+	total_bruto = _normalizar_pontuacao(
+		titulacao["subtotal_bruto"]
+		+ atuacao["subtotal_bruto"]
+		+ producao["subtotal_bruto"]
+		+ formacao["subtotal_bruto"]
+	)
+	total_limitado = _normalizar_pontuacao(
+		titulacao["subtotal_limitado"]
+		+ atuacao["subtotal_limitado"]
+		+ producao["subtotal_limitado"]
+		+ formacao["subtotal_limitado"]
+	)
+
+	observacoes = [
+		"Seção 'II - Atuação na extensão' (máximo 8 pontos) não existe nos gráficos públicos do Lattes — informe as quantidades nos campos da tabela.",
+		_OBSERVACAO_PERIODO_EXTENSAO,
+	]
+	if pontos_titulacao == 0:
+		observacoes.insert(0, "Titulação não identificada automaticamente.")
+
+	return {
+		"success": True,
+		"message": "Barema PIBEX docente calculado com sucesso.",
+		"titulacao": titulacao,
+		"atuacao_extensao": atuacao,
+		"producao": producao,
+		"formacao_recursos_humanos": formacao,
+		"total_bruto": total_bruto,
+		"total_limitado": total_limitado,
+		"observacoes": observacoes,
+	}
+
+
+def calcularBaremaExtensaoDiscente(resultado=None):
+	dados_lattes, erro = _preparar_dados_extensao(resultado, "PIBEX discente")
+	if erro:
+		return erro
+
+	preview_html = dados_lattes.get("preview_html") or ""
+	index_html = dados_lattes.get("index_html") or ""
+	variaveis_js = _extrair_variaveis_js(index_html)
+	quantidades = _coletar_quantidades_extensao(variaveis_js, preview_html, index_html)
+
+	atuacao = _montar_secao(_EXTENSAO_ATUACAO_DISCENTE, quantidades, 6, editavel=True)
+	producao = _montar_secao(_EXTENSAO_PRODUCAO_DISCENTE, quantidades, 5)
+	eventos = _montar_secao(_EXTENSAO_EVENTOS_DISCENTE, quantidades, 9, editavel=True)
+
+	total_bruto = _normalizar_pontuacao(
+		atuacao["subtotal_bruto"] + producao["subtotal_bruto"] + eventos["subtotal_bruto"]
+	)
+	total_limitado = _normalizar_pontuacao(
+		atuacao["subtotal_limitado"] + producao["subtotal_limitado"] + eventos["subtotal_limitado"]
+	)
+
+	observacoes = [
+		"Seções 'I - Atuação na extensão' (máximo 6) e 'III - Participação/organização de eventos' (máximo 9) não existem nos gráficos públicos do Lattes — informe as quantidades nos campos da tabela.",
+		_OBSERVACAO_PERIODO_EXTENSAO,
+	]
+
+	return {
+		"success": True,
+		"message": "Barema PIBEX discente calculado com sucesso.",
+		"atuacao_extensao": atuacao,
+		"producao": producao,
+		"participacao_eventos": eventos,
+		"total_bruto": total_bruto,
+		"total_limitado": total_limitado,
+		"observacoes": observacoes,
+	}
+
+
+def _registrar_barema_por_tipo(tipo, consulta_id, conteudo):
+	code = conteudo.get("code")
+	nome = conteudo.get("nome")
+
+	if tipo == "aeri":
+		registrar_barema_aeri(consulta_id, code, nome, conteudo.get("barema_aeri"))
+	elif tipo == "extensao_docente":
+		registrar_barema_extensao_docente(
+			consulta_id, code, nome, conteudo.get("barema_extensao_docente")
+		)
+	elif tipo == "extensao_discente":
+		registrar_barema_extensao_discente(
+			consulta_id, code, nome, conteudo.get("barema_extensao_discente")
+		)
+	else:
+		registrar_barema(consulta_id, code, nome, conteudo.get("barema"))
+
+
 # Busca os dados no service
 def buscaLattes(url, tipo="ic"):
 	code = getLattesCode(url)
@@ -642,6 +1163,8 @@ def buscaLattes(url, tipo="ic"):
 		conteudo = getConteudo(resultado)
 		conteudo["barema"] = calcularBarema()
 		conteudo["barema_aeri"] = calcularBaremaAERI()
+		conteudo["barema_extensao_docente"] = calcularBaremaExtensaoDocente()
+		conteudo["barema_extensao_discente"] = calcularBaremaExtensaoDiscente()
 		registrar_consulta(url, conteudo, tipo)
 		return conteudo
 
@@ -662,7 +1185,8 @@ def buscaLattes(url, tipo="ic"):
 	conteudo = getConteudo(resultado)
 	conteudo["barema"] = calcularBarema()
 	conteudo["barema_aeri"] = calcularBaremaAERI()
+	conteudo["barema_extensao_docente"] = calcularBaremaExtensaoDocente()
+	conteudo["barema_extensao_discente"] = calcularBaremaExtensaoDiscente()
 	consulta_id = registrar_consulta(url, conteudo, tipo)
-	registrar_barema(consulta_id, conteudo.get("code"), conteudo.get("nome"), conteudo.get("barema"))
-	registrar_barema_aeri(consulta_id, conteudo.get("code"), conteudo.get("nome"), conteudo.get("barema_aeri"))
+	_registrar_barema_por_tipo(tipo, consulta_id, conteudo)
 	return conteudo

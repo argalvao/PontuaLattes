@@ -7,15 +7,41 @@ import re
 import secrets
 import threading
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlparse
 
-import libsql_client
+try:  # o libsql-client so e necessario no modo Turso
+	import libsql_client
+except ImportError:  # pragma: no cover
+	libsql_client = None
 
 
 TURSO_URL = os.getenv("TURSO_URL", "").strip()
 TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "").strip()
+
+# Sem TURSO_URL o sistema roda em modo local, gravando em um arquivo SQLite.
+# O Turso e SQLite distribuido, entao o mesmo SQL vale para os dois modos.
+CAMINHO_BANCO_LOCAL = os.getenv(
+	"LOCAL_DB_PATH",
+	str(Path(__file__).resolve().parent.parent / "pontualattes.db"),
+)
+
+
+def usando_banco_local():
+	return not TURSO_URL
 DEFAULT_DASHBOARD_USERNAME = os.getenv("DEFAULT_DASHBOARD_USERNAME", "admin")
 DEFAULT_DASHBOARD_PASSWORD = os.getenv("DEFAULT_DASHBOARD_PASSWORD", "")
+
+TIPOS_VALIDOS = ("ic", "aeri", "extensao_docente", "extensao_discente")
+TIPOS_EDITAL = ("ic", "aeri", "extensao")
+
+# Cada modalidade de barema tem a sua propria tabela de pontuacoes.
+_BAREMA_TABELAS = {
+	"ic": "barema",
+	"aeri": "barema_aeri",
+	"extensao_docente": "barema_extensao_docente",
+	"extensao_discente": "barema_extensao_discente",
+}
 
 _client = None
 _client_init_lock = threading.Lock()
@@ -31,14 +57,20 @@ def _get_client():
 	global _client
 	with _client_init_lock:
 		if _client is None:
-			if not TURSO_URL:
-				raise RuntimeError(
-					"Defina a variável TURSO_URL com a URL do banco Turso."
-					" Exemplo: libsql://nome-org.turso.io"
-				)
+			if usando_banco_local():
+				from local_store import criar_cliente_local
+
+				_client = criar_cliente_local(CAMINHO_BANCO_LOCAL)
+				return _client
+
 			if not TURSO_AUTH_TOKEN:
 				raise RuntimeError(
 					"Defina a variável TURSO_AUTH_TOKEN com o token de autenticação do Turso."
+				)
+			if libsql_client is None:
+				raise RuntimeError(
+					"O pacote libsql-client não está instalado."
+					" Rode: pip install -r API/requirements.txt"
 				)
 			_client = libsql_client.create_client_sync(url=TURSO_URL, auth_token=TURSO_AUTH_TOKEN)
 	return _client
@@ -79,6 +111,20 @@ def _as_float(value, default=None):
 		return float(str(value).strip().replace(",", "."))
 	except (TypeError, ValueError, AttributeError):
 		return default
+
+
+def normalizar_tipo(tipo):
+	tipo = str(tipo or "").strip()
+	return tipo if tipo in TIPOS_VALIDOS else "ic"
+
+
+def normalizar_tipo_edital(tipo):
+	tipo = str(tipo or "").strip()
+	return tipo if tipo in TIPOS_EDITAL else None
+
+
+def _tabela_barema(tipo):
+	return _BAREMA_TABELAS.get(normalizar_tipo(tipo), "barema")
 
 
 def _extract_public_lattes_code(value):
@@ -172,6 +218,44 @@ _DDL = [
 	)
 	""",
 	"""
+	CREATE TABLE IF NOT EXISTS barema_extensao_docente (
+		id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+		consulta_id        INTEGER,
+		code               TEXT UNIQUE,
+		nome               TEXT,
+		titulacao_bruto    REAL,
+		titulacao_limitado REAL,
+		atuacao_bruto      REAL,
+		atuacao_limitado   REAL,
+		producao_bruto     REAL,
+		producao_limitado  REAL,
+		formacao_bruto     REAL,
+		formacao_limitado  REAL,
+		total_bruto        REAL,
+		total_limitado     REAL,
+		barema_json        TEXT,
+		updated_at         TEXT
+	)
+	""",
+	"""
+	CREATE TABLE IF NOT EXISTS barema_extensao_discente (
+		id                INTEGER PRIMARY KEY AUTOINCREMENT,
+		consulta_id       INTEGER,
+		code              TEXT UNIQUE,
+		nome              TEXT,
+		atuacao_bruto     REAL,
+		atuacao_limitado  REAL,
+		producao_bruto    REAL,
+		producao_limitado REAL,
+		eventos_bruto     REAL,
+		eventos_limitado  REAL,
+		total_bruto       REAL,
+		total_limitado    REAL,
+		barema_json       TEXT,
+		updated_at        TEXT
+	)
+	""",
+	"""
 	CREATE TABLE IF NOT EXISTS editais (
 		tipo       TEXT PRIMARY KEY,
 		ano        TEXT,
@@ -228,8 +312,8 @@ def get_editais():
 		d = dict(zip(result.columns, row))
 		rows[d["tipo"]] = d
 	return {
-		"ic": rows.get("ic", {"tipo": "ic", "ano": "", "url": ""}),
-		"aeri": rows.get("aeri", {"tipo": "aeri", "ano": "", "url": ""}),
+		tipo: rows.get(tipo, {"tipo": tipo, "ano": "", "url": ""})
+		for tipo in TIPOS_EDITAL
 	}
 
 
@@ -259,7 +343,7 @@ def registrar_consulta(url_informada, resultado, tipo="ic"):
 	code = resultado.get("code") or ""
 	success = 1 if resultado.get("success") else 0
 	message = resultado.get("message") or ""
-	tipo = tipo if tipo in ("ic", "aeri") else "ic"
+	tipo = normalizar_tipo(tipo)
 	now = _now_str()
 
 	# Dedup: find an existing row that shares any known Lattes code AND same tipo
@@ -300,8 +384,9 @@ def registrar_consulta(url_informada, resultado, tipo="ic"):
 
 def get_consultas(success=None, page=1, per_page=10, tipo="ic"):
 	init_database()
+	tipo = normalizar_tipo(tipo)
 	offset = max(page - 1, 0) * per_page
-	barema_table = "barema_aeri" if tipo == "aeri" else "barema"
+	barema_table = _tabela_barema(tipo)
 
 	if success is not None:
 		sql = f"""
@@ -344,6 +429,8 @@ def get_consultas(success=None, page=1, per_page=10, tipo="ic"):
 
 def count_consultas(success=None, tipo=None):
 	init_database()
+	if tipo is not None:
+		tipo = normalizar_tipo(tipo)
 	if tipo is not None and success is not None:
 		result = _q("SELECT COUNT(*) AS n FROM consultas WHERE success = ? AND tipo = ?", (int(success), tipo))
 	elif tipo is not None:
@@ -358,7 +445,8 @@ def count_consultas(success=None, tipo=None):
 
 def get_top5_consultas(tipo="ic"):
 	init_database()
-	barema_table = "barema_aeri" if tipo == "aeri" else "barema"
+	tipo = normalizar_tipo(tipo)
+	barema_table = _tabela_barema(tipo)
 	sql = f"""
 		SELECT b.code, b.nome, COUNT(*) AS total
 		FROM consultas c
@@ -368,7 +456,7 @@ def get_top5_consultas(tipo="ic"):
 		ORDER BY total DESC, b.nome ASC
 		LIMIT 5
 	"""
-	result = _q(sql)
+	result = _q(sql, (tipo,))
 	return [
 		{"nome": row["nome"] or "Sem nome", "code": row["code"], "total": _as_int(row["total"])}
 		for row in _rows(result)
@@ -501,6 +589,111 @@ def registrar_barema_aeri(consulta_id, code, nome, barema_resultado):
 	)
 
 
+def registrar_barema_extensao_docente(consulta_id, code, nome, barema_resultado):
+	if not consulta_id or not code or not barema_resultado or not barema_resultado.get("success"):
+		return
+
+	init_database()
+	payload_json = json.dumps(barema_resultado, ensure_ascii=False)
+	now = _now_str()
+
+	_q(
+		"""
+		INSERT INTO barema_extensao_docente (
+			consulta_id, code, nome,
+			titulacao_bruto, titulacao_limitado,
+			atuacao_bruto, atuacao_limitado,
+			producao_bruto, producao_limitado,
+			formacao_bruto, formacao_limitado,
+			total_bruto, total_limitado,
+			barema_json, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(code) DO UPDATE SET
+			consulta_id        = excluded.consulta_id,
+			nome               = excluded.nome,
+			titulacao_bruto    = excluded.titulacao_bruto,
+			titulacao_limitado = excluded.titulacao_limitado,
+			atuacao_bruto      = excluded.atuacao_bruto,
+			atuacao_limitado   = excluded.atuacao_limitado,
+			producao_bruto     = excluded.producao_bruto,
+			producao_limitado  = excluded.producao_limitado,
+			formacao_bruto     = excluded.formacao_bruto,
+			formacao_limitado  = excluded.formacao_limitado,
+			total_bruto        = excluded.total_bruto,
+			total_limitado     = excluded.total_limitado,
+			barema_json        = excluded.barema_json,
+			updated_at         = excluded.updated_at
+		""",
+		(
+			consulta_id,
+			code,
+			nome or "",
+			barema_resultado.get("titulacao", {}).get("subtotal_bruto", 0),
+			barema_resultado.get("titulacao", {}).get("subtotal_limitado", 0),
+			barema_resultado.get("atuacao_extensao", {}).get("subtotal_bruto", 0),
+			barema_resultado.get("atuacao_extensao", {}).get("subtotal_limitado", 0),
+			barema_resultado.get("producao", {}).get("subtotal_bruto", 0),
+			barema_resultado.get("producao", {}).get("subtotal_limitado", 0),
+			barema_resultado.get("formacao_recursos_humanos", {}).get("subtotal_bruto", 0),
+			barema_resultado.get("formacao_recursos_humanos", {}).get("subtotal_limitado", 0),
+			barema_resultado.get("total_bruto", 0),
+			barema_resultado.get("total_limitado", 0),
+			payload_json,
+			now,
+		),
+	)
+
+
+def registrar_barema_extensao_discente(consulta_id, code, nome, barema_resultado):
+	if not consulta_id or not code or not barema_resultado or not barema_resultado.get("success"):
+		return
+
+	init_database()
+	payload_json = json.dumps(barema_resultado, ensure_ascii=False)
+	now = _now_str()
+
+	_q(
+		"""
+		INSERT INTO barema_extensao_discente (
+			consulta_id, code, nome,
+			atuacao_bruto, atuacao_limitado,
+			producao_bruto, producao_limitado,
+			eventos_bruto, eventos_limitado,
+			total_bruto, total_limitado,
+			barema_json, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(code) DO UPDATE SET
+			consulta_id       = excluded.consulta_id,
+			nome              = excluded.nome,
+			atuacao_bruto     = excluded.atuacao_bruto,
+			atuacao_limitado  = excluded.atuacao_limitado,
+			producao_bruto    = excluded.producao_bruto,
+			producao_limitado = excluded.producao_limitado,
+			eventos_bruto     = excluded.eventos_bruto,
+			eventos_limitado  = excluded.eventos_limitado,
+			total_bruto       = excluded.total_bruto,
+			total_limitado    = excluded.total_limitado,
+			barema_json       = excluded.barema_json,
+			updated_at        = excluded.updated_at
+		""",
+		(
+			consulta_id,
+			code,
+			nome or "",
+			barema_resultado.get("atuacao_extensao", {}).get("subtotal_bruto", 0),
+			barema_resultado.get("atuacao_extensao", {}).get("subtotal_limitado", 0),
+			barema_resultado.get("producao", {}).get("subtotal_bruto", 0),
+			barema_resultado.get("producao", {}).get("subtotal_limitado", 0),
+			barema_resultado.get("participacao_eventos", {}).get("subtotal_bruto", 0),
+			barema_resultado.get("participacao_eventos", {}).get("subtotal_limitado", 0),
+			barema_resultado.get("total_bruto", 0),
+			barema_resultado.get("total_limitado", 0),
+			payload_json,
+			now,
+		),
+	)
+
+
 def hash_password(password, salt=None):
 	if salt is None:
 		salt = secrets.token_hex(16)
@@ -589,6 +782,35 @@ def dump_barema_aeri():
 		"programas_bruto, programas_limitado, "
 		"total_bruto, total_limitado, updated_at "
 		"FROM barema_aeri ORDER BY id ASC"
+	)
+	return _rows(result)
+
+
+def dump_barema_extensao_docente():
+	"""Retorna todos os registros do barema PIBEX docente (sem paginação)."""
+	init_database()
+	result = _q(
+		"SELECT id, consulta_id, code, nome, "
+		"titulacao_bruto, titulacao_limitado, "
+		"atuacao_bruto, atuacao_limitado, "
+		"producao_bruto, producao_limitado, "
+		"formacao_bruto, formacao_limitado, "
+		"total_bruto, total_limitado, updated_at "
+		"FROM barema_extensao_docente ORDER BY id ASC"
+	)
+	return _rows(result)
+
+
+def dump_barema_extensao_discente():
+	"""Retorna todos os registros do barema PIBEX discente (sem paginação)."""
+	init_database()
+	result = _q(
+		"SELECT id, consulta_id, code, nome, "
+		"atuacao_bruto, atuacao_limitado, "
+		"producao_bruto, producao_limitado, "
+		"eventos_bruto, eventos_limitado, "
+		"total_bruto, total_limitado, updated_at "
+		"FROM barema_extensao_discente ORDER BY id ASC"
 	)
 	return _rows(result)
 
